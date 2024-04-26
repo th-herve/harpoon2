@@ -1,7 +1,11 @@
+local Extensions = require("harpoon.extensions")
 local Logger = require("harpoon.logger")
 local Path = require("plenary.path")
 local function normalize_path(buf_name, root)
     return Path:new(buf_name):make_relative(root)
+end
+local function to_exact_name(value)
+    return "^" .. value .. "$"
 end
 
 local M = {}
@@ -10,11 +14,11 @@ M.DEFAULT_LIST = DEFAULT_LIST
 
 ---@alias HarpoonListItem {value: any, context: any}
 ---@alias HarpoonListFileItem {value: string, context: {row: number, col: number}}
----@alias HarpoonListFileOptions {split: boolean, vsplit: boolean}
+---@alias HarpoonListFileOptions {split: boolean, vsplit: boolean, tabedit: boolean}
 
 ---@class HarpoonPartialConfigItem
 ---@field select_with_nil? boolean defaults to false
----@field encode? (fun(list_item: HarpoonListItem): string)
+---@field encode? (fun(list_item: HarpoonListItem): string) | boolean
 ---@field decode? (fun(obj: string): any)
 ---@field display? (fun(list_item: HarpoonListItem): string)
 ---@field select? (fun(list_item?: HarpoonListItem, list: HarpoonList, options: any?): nil)
@@ -25,11 +29,8 @@ M.DEFAULT_LIST = DEFAULT_LIST
 ---@field get_root_dir? fun(): string
 
 ---@class HarpoonSettings
----@field border_chars string[] defaults to { "─", "│", "─", "│", "╭", "╮", "╯", "╰" }
----@field save_on_toggle boolean defaults to true
+---@field save_on_toggle boolean defaults to false
 ---@field sync_on_ui_close? boolean
----@field ui_fallback_width number defaults 69, nice
----@field ui_width_ratio number defaults to 0.62569
 ---@field key (fun(): string)
 
 ---@class HarpoonPartialSettings
@@ -59,26 +60,13 @@ function M.get_default_config()
         settings = {
             save_on_toggle = false,
             sync_on_ui_close = false,
-            border_chars = {
-                "─",
-                "│",
-                "─",
-                "│",
-                "╭",
-                "╮",
-                "╯",
-                "╰",
-            },
-            ui_fallback_width = 69,
-            ui_width_ratio = 0.62569,
+
             key = function()
                 return vim.loop.cwd()
             end,
         },
 
         default = {
-            --- ui_nav_wrap allows the ability to enable(true) or disable(false) wrapping on prev and next list calls.
-            ui_nav_wrap = true,
 
             --- select_with_nill allows for a list to call select even if the provided item is nil
             select_with_nil = false,
@@ -112,43 +100,84 @@ function M.get_default_config()
                     list.name,
                     options
                 )
-                options = options or {}
                 if list_item == nil then
                     return
                 end
 
-                local bufnr = vim.fn.bufnr(list_item.value)
+                options = options or {}
+
+                local bufnr = vim.fn.bufnr(to_exact_name(list_item.value))
                 local set_position = false
-                if bufnr == -1 then
+                if bufnr == -1 then -- must create a buffer!
                     set_position = true
-                    bufnr = vim.fn.bufnr(list_item.value, true)
+                    -- bufnr = vim.fn.bufnr(list_item.value, true)
+                    bufnr = vim.fn.bufadd(list_item.value)
                 end
                 if not vim.api.nvim_buf_is_loaded(bufnr) then
                     vim.fn.bufload(bufnr)
-                    vim.api.nvim_buf_set_option(bufnr, "buflisted", true)
+                    vim.api.nvim_set_option_value("buflisted", true, {
+                        buf = bufnr,
+                    })
                 end
 
                 if options.vsplit then
                     vim.cmd("vsplit")
-                    vim.api.nvim_set_current_buf(bufnr)
                 elseif options.split then
                     vim.cmd("split")
-                    vim.api.nvim_set_current_buf(bufnr)
-                else
-                    vim.api.nvim_set_current_buf(bufnr)
+                elseif options.tabedit then
+                    vim.cmd("tabedit")
                 end
 
+                vim.api.nvim_set_current_buf(bufnr)
+
                 if set_position then
+                    local lines = vim.api.nvim_buf_line_count(bufnr)
+
+                    local edited = false
+                    if list_item.context.row > lines then
+                        list_item.context.row = lines
+                        edited = true
+                    end
+
+                    local row = list_item.context.row
+                    local row_text =
+                        vim.api.nvim_buf_get_lines(0, row - 1, row, false)
+                    local col = #row_text[1]
+
+                    if list_item.context.col > col then
+                        list_item.context.col = col
+                        edited = true
+                    end
+
                     vim.api.nvim_win_set_cursor(0, {
                         list_item.context.row or 1,
                         list_item.context.col or 0,
                     })
+
+                    if edited then
+                        Extensions.extensions:emit(
+                            Extensions.event_names.POSITION_UPDATED,
+                            {
+                                list_item = list_item,
+                            }
+                        )
+                    end
                 end
+
+                Extensions.extensions:emit(Extensions.event_names.NAVIGATE, {
+                    buffer = bufnr,
+                })
             end,
 
             ---@param list_item_a HarpoonListItem
             ---@param list_item_b HarpoonListItem
             equals = function(list_item_a, list_item_b)
+                if list_item_a == nil and list_item_b == nil then
+                    return true
+                elseif list_item_a == nil or list_item_b == nil then
+                    return false
+                end
+
                 return list_item_a.value == list_item_b.value
             end,
 
@@ -161,11 +190,6 @@ function M.get_default_config()
             ---@return HarpoonListItem
             create_list_item = function(config, name)
                 name = name
-                    -- TODO: should we do path normalization???
-                    -- i know i have seen sometimes it becoming an absolute
-                    -- path, if that is the case we can use the context to
-                    -- store the bufname and then have value be the normalized
-                    -- value
                     or normalize_path(
                         vim.api.nvim_buf_get_name(
                             vim.api.nvim_get_current_buf()
@@ -191,10 +215,15 @@ function M.get_default_config()
                 }
             end,
 
+            ---@param arg {buf: number}
+            ---@param list HarpoonList
             BufLeave = function(arg, list)
                 local bufnr = arg.buf
-                local bufname = vim.api.nvim_buf_get_name(bufnr)
-                local item = list:get_by_display(bufname)
+                local bufname = normalize_path(
+                    vim.api.nvim_buf_get_name(bufnr),
+                    list.config.get_root_dir()
+                )
+                local item = list:get_by_value(bufname)
 
                 if item then
                     local pos = vim.api.nvim_win_get_cursor(0)
@@ -210,6 +239,11 @@ function M.get_default_config()
 
                     item.context.row = pos[1]
                     item.context.col = pos[2]
+
+                    Extensions.extensions:emit(
+                        Extensions.event_names.POSITION_UPDATED,
+                        item
+                    )
                 end
             end,
 
@@ -218,7 +252,7 @@ function M.get_default_config()
     }
 end
 
----@param partial_config HarpoonPartialConfig
+---@param partial_config HarpoonPartialConfig?
 ---@param latest_config HarpoonConfig?
 ---@return HarpoonConfig
 function M.merge_config(partial_config, latest_config)
@@ -232,6 +266,15 @@ function M.merge_config(partial_config, latest_config)
         else
             config[k] = vim.tbl_extend("force", config[k] or {}, v)
         end
+    end
+    return config
+end
+
+---@param settings HarpoonPartialSettings
+function M.create_config(settings)
+    local config = M.get_default_config()
+    for k, v in ipairs(settings) do
+        config.settings[k] = v
     end
     return config
 end

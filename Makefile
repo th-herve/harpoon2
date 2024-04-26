@@ -6,4 +6,13 @@ lint:
 	echo "===> Linting"
 	luacheck lua/ --globals vim
 
-pr-ready: fmt lint
+test:
+	echo "===> Testing"
+	nvim --headless --noplugin -u scripts/tests/minimal.vim \
+        -c "PlenaryBustedDirectory lua/harpoon/test/ {minimal_init = 'scripts/tests/minimal.vim'}"
+
+clean:
+	echo "===> Cleaning"
+	rm /tmp/lua_*
+
+pr-ready: fmt lint test

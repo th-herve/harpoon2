@@ -44,6 +44,14 @@ use {
     requires = { {"nvim-lua/plenary.nvim"} }
 }
 ```
+* install using [lazy.nvim](https://github.com/folke/lazy.nvim)
+```lua
+{
+    "ThePrimeagen/harpoon",
+    branch = "harpoon2",
+    dependencies = { "nvim-lua/plenary.nvim" }
+}
+```
 
 ## ⇁ Getting Started
 
@@ -66,13 +74,48 @@ local harpoon = require("harpoon")
 harpoon:setup()
 -- REQUIRED
 
-vim.keymap.set("n", "<leader>a", function() harpoon:list():append() end)
+vim.keymap.set("n", "<leader>a", function() harpoon:list():add() end)
 vim.keymap.set("n", "<C-e>", function() harpoon.ui:toggle_quick_menu(harpoon:list()) end)
 
 vim.keymap.set("n", "<C-h>", function() harpoon:list():select(1) end)
 vim.keymap.set("n", "<C-t>", function() harpoon:list():select(2) end)
 vim.keymap.set("n", "<C-n>", function() harpoon:list():select(3) end)
 vim.keymap.set("n", "<C-s>", function() harpoon:list():select(4) end)
+
+-- Toggle previous & next buffers stored within Harpoon list
+vim.keymap.set("n", "<C-S-P>", function() harpoon:list():prev() end)
+vim.keymap.set("n", "<C-S-N>", function() harpoon:list():next() end)
+```
+
+### Telescope
+
+In order to use [Telescope](https://github.com/nvim-telescope/telescope.nvim) as a UI,
+make sure to add `telescope` to your dependencies and paste this following snippet into your configuration.
+
+```lua
+local harpoon = require('harpoon')
+harpoon:setup({})
+
+-- basic telescope configuration
+local conf = require("telescope.config").values
+local function toggle_telescope(harpoon_files)
+    local file_paths = {}
+    for _, item in ipairs(harpoon_files.items) do
+        table.insert(file_paths, item.value)
+    end
+
+    require("telescope.pickers").new({}, {
+        prompt_title = "Harpoon",
+        finder = require("telescope.finders").new_table({
+            results = file_paths,
+        }),
+        previewer = conf.file_previewer({}),
+        sorter = conf.generic_sorter({}),
+    }):find()
+end
+
+vim.keymap.set("n", "<C-e>", function() toggle_telescope(harpoon:list()) end,
+    { desc = "Open harpoon window" })
 ```
 
 ## ⇁ API
@@ -94,7 +137,7 @@ harpoon:setup({
     -- Setting up custom behavior for a list named "cmd"
     "cmd" = {
 
-        -- When you call list:append() this function is called and the return
+        -- When you call list:add() this function is called and the return
         -- value will be put in the list at the end.
         --
         -- which means same behavior for prepend except where in the list the
@@ -142,24 +185,26 @@ There is quite a bit of behavior you can configure via `harpoon:setup()`
 **HarpoonPartialConfigItem Definition**
 ```
 ---@class HarpoonPartialConfigItem
----@field encode? (fun(list_item: HarpoonListItem): string)
+---@field select_with_nil? boolean defaults to false
+---@field encode? (fun(list_item: HarpoonListItem): string) | boolean
 ---@field decode? (fun(obj: string): any)
 ---@field display? (fun(list_item: HarpoonListItem): string)
 ---@field select? (fun(list_item?: HarpoonListItem, list: HarpoonList, options: any?): nil)
 ---@field equals? (fun(list_line_a: HarpoonListItem, list_line_b: HarpoonListItem): boolean)
----@field add? fun(item: any?): HarpoonListItem
+---@field create_list_item? fun(config: HarpoonPartialConfigItem, item: any?): HarpoonListItem
 ---@field BufLeave? fun(evt: any, list: HarpoonList): nil
 ---@field VimLeavePre? fun(evt: any, list: HarpoonList): nil
 ---@field get_root_dir? fun(): string
 ```
 
 **Detailed Definitions**
+* `select_with_nil`: allows for a list to call select even if the provided item is nil
 * `encode`: how to encode the list item to the harpoon file.  if encode is `false`, then the list will not be saved to disk (think terminals)
 * `decode`: how to decode the list
 * `display`: how to display the list item in the ui menu
 * `select`: the action taken when selecting a list item. called from `list:select(idx, options)`
 * `equals`: how to compare two list items for equality
-* `add`: called when `list:append()` or `list:prepend()` is called.  called with an item, which will be a string, when adding through the ui menu
+* `create_list_item`: called when `list:add()` or `list:prepend()` is called.  called with an item, which will be a string, when adding through the ui menu
 * `BufLeave`: this function is called for every list on BufLeave.  if you need custom behavior, this is the place
 * `VimLeavePre`: this function is called for every list on VimLeavePre.
 * `get_root_dir`: used for creating relative paths.  defaults to `vim.loop.cwd()`
@@ -177,8 +222,8 @@ Settings can alter the experience of harpoon
 ```
 
 **Descriptions**
-* `save_on_toggle`: any time the ui menu is closed then we will sync the state back to the backing list
-* `border_chars`: the ui's border characters to be displayed
+* `save_on_toggle`: any time the ui menu is closed then we will save the state back to the backing list, not to the fs
+* `sync_on_ui_close`: any time the ui menu is closed then the state of the list will be sync'd back to the fs
 * `key` how the out list key is looked up.  This can be useful when using worktrees and using git remote instead of file path
 
 **Defaults**
@@ -186,16 +231,35 @@ Settings can alter the experience of harpoon
 settings = {
     save_on_toggle = false,
     sync_on_ui_close = false,
-    border_chars = { "─", "│", "─", "│", "╭", "╮", "╯", "╰" },
     key = function()
         return vim.loop.cwd()
     end,
 },
 ```
 
+### Extend
+The 'extend' functionality can be used to add keymaps for opening files in splits & tabs.
+
+```lua
+harpoon:extend({
+  UI_CREATE = function(cx)
+    vim.keymap.set("n", "<C-v>", function()
+      harpoon.ui:select_menu_item({ vsplit = true })
+    end, { buffer = cx.bufnr })
+
+    vim.keymap.set("n", "<C-x>", function()
+      harpoon.ui:select_menu_item({ split = true })
+    end, { buffer = cx.bufnr })
+
+    vim.keymap.set("n", "<C-t>", function()
+      harpoon.ui:select_menu_item({ tabedit = true })
+    end, { buffer = cx.bufnr })
+  end,
+})
+```
+
 ### Highlight Groups
-Currently available highlight groups are
-`HarpoonWindow`, `HarpoonBorder`, and `HarpoonTitle`.
+TODO: Fill in the idea that we will emit out window information
 
 ### Logger
 This can help debug issues on other's computer.  To get your debug log please do the following.
@@ -205,11 +269,26 @@ This can help debug issues on other's computer.  To get your debug log please do
 1. execute vim command `:lua require("harpoon").logger:show()` and copy the buffer
 1. paste the buffer as part of the bug creation
 
+## Extends
+THIS PART OF THE DOCS NEEDS FILLING OUT
+
+```lua
+local harpoon = require("harpoon");
+local extensions = require("harpoon.extensions");
+
+harpoon:setup()
+harpoon:extend(extensions.builtins.command_on_nav("foo bar"));
+harpoon:extend(extensions.builtins.navigate_with_number());
+```
+
 ## ⇁ Contribution
 This project is officially open source, not just public source.  If you wish to
 contribute start with an issue and I am totally willing for PRs, but I will be
 very conservative on what I take.  I don't want Harpoon _solving_ specific
 issues, I want it to create the proper hooks to solve any problem
+
+**Running Tests**
+To run the tests make sure [plenary](https://github.com/nvim-lua/plenary.nvim) is checked out in the parent directory of *this* repository, then run `make test`.
 
 ## ⇁ Social
 For questions about Harpoon, there's a #harpoon channel on [the Primeagen's Discord](https://discord.gg/theprimeagen) server.
@@ -222,4 +301,3 @@ Original Harpoon will remain in a frozen state and i will merge PRs in with _no
 code review_ for those that wish to remain on that.  Harpoon 2 is significantly
 better and allows for MUCH greater control.  Please migrate to that (will
 become `master` within the next few months).
-

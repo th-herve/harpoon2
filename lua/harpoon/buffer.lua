@@ -1,4 +1,3 @@
-local utils = require("harpoon.utils")
 local HarpoonGroup = require("harpoon.autocmd")
 
 local M = {}
@@ -16,6 +15,7 @@ local function get_harpoon_menu_name()
 end
 
 function M.run_select_command()
+    ---@type Harpoon
     local harpoon = require("harpoon")
     harpoon.logger:log("select by keymap '<CR>'")
     harpoon.ui:select_menu_item()
@@ -27,9 +27,6 @@ function M.run_toggle_command(key)
     harpoon.ui:toggle_quick_menu()
 end
 
----TODO: I don't know how to do what i want to do, but i want to be able to
----make this so we use callbacks for these buffer actions instead of using
----strings back into the ui.  it feels gross and it puts odd coupling
 ---@param bufnr number
 function M.setup_autocmds_and_keymaps(bufnr)
     local curr_file = vim.api.nvim_buf_get_name(0)
@@ -48,51 +45,21 @@ function M.setup_autocmds_and_keymaps(bufnr)
         vim.api.nvim_buf_set_name(bufnr, get_harpoon_menu_name())
     end
 
-    vim.api.nvim_buf_set_option(bufnr, "filetype", "harpoon")
-    vim.api.nvim_buf_set_option(bufnr, "buftype", "acwrite")
-    vim.api.nvim_buf_set_option(bufnr, "bufhidden", "delete")
-
-    vim.api.nvim_buf_set_keymap(
-        bufnr,
-        "n",
-        "q",
-        "<Cmd>lua require('harpoon.buffer').run_toggle_command('q')<CR>",
-        { silent = true }
-    )
-    vim.api.nvim_buf_set_keymap(
-        bufnr,
-        "n",
-        "<ESC>",
-        "<Cmd>lua require('harpoon.buffer').run_toggle_command('Esc')<CR>",
-        { silent = true }
-    )
-    vim.api.nvim_buf_set_keymap(
-        bufnr,
-        "n",
-        "<CR>",
-        "<Cmd>lua require('harpoon.buffer').run_select_command()<CR>",
-        {}
-    )
-
-    -- TODO: Do we want this?  is this a thing?
-    -- its odd... why save on text change? shouldn't we wait until close / w / esc?
-    --[[
-    if global_config.save_on_change then
-        vim.cmd(
-            string.format(
-                "autocmd TextChanged,TextChangedI <buffer=%s> lua require('harpoon').ui:save()",
-                bufnr
-            )
-        )
-    end
-    --]]
-    vim.api.nvim_create_autocmd("BufModifiedSet", {
-        buffer = bufnr,
-        group = HarpoonGroup,
-        callback = function()
-            vim.api.nvim_buf_set_option(bufnr, "modified", false)
-        end,
+    vim.api.nvim_set_option_value("filetype", "harpoon", {
+        buf = bufnr,
     })
+    vim.api.nvim_set_option_value("buftype", "acwrite", { buf = bufnr })
+    vim.keymap.set("n", "q", function()
+        M.run_toggle_command("q")
+    end, { buffer = bufnr, silent = true })
+
+    vim.keymap.set("n", "<Esc>", function()
+        M.run_toggle_command("Esc")
+    end, { buffer = bufnr, silent = true })
+
+    vim.keymap.set("n", "<CR>", function()
+        M.run_select_command()
+    end, { buffer = bufnr, silent = true })
 
     vim.api.nvim_create_autocmd({ "BufWriteCmd" }, {
         group = HarpoonGroup,
@@ -122,9 +89,7 @@ function M.get_contents(bufnr)
     local indices = {}
 
     for _, line in pairs(lines) do
-        if not utils.is_white_space(line) then
-            table.insert(indices, line)
-        end
+        table.insert(indices, line)
     end
 
     return indices
